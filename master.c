@@ -15,7 +15,7 @@
 #define SIMDSIZE    4
 #define NUM_THREADS 4
 #define MAX_ROUND 2000 //最大的聚类次数
-#define MAX_SUPER_NODES 256
+#define MAX_SUPER_NODES 256 //感觉应该是MAX_NODES
 
 #define CLUSTER_COUNT (2000)
 #define DIMS          (196608)
@@ -664,8 +664,8 @@ int main(int argc, char* argv[]){
                 "\n\t\tthe first is the file name that contain data"  
                 "\n\t\tthe second is the size of data set,"  
                 "\n\t\tthe third indicate the cluster_count"  
-                "\n\t\tthe fifth indicate the data dimension"  
-                "\n\t\tthe sixth indicate whether save run result"  
+                "\n\t\tthe fourth indicate the data dimension"  
+                "\n\t\tthe fifth indicate whether save run result"  
                 "\n");  
         exit(0);  
   } 
