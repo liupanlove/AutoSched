@@ -1,6 +1,6 @@
 LINK = mpicc
 CC = mpicc -host
-SWCC = sw5cc.new 
+SWCC = sw5cc.new
 FLAGS = -O3 -OPT:IEEE_arith=2
 FLAGS += -DUSE_MPI
 #FLAGS += -DUSE_4CG
@@ -8,7 +8,7 @@ FLAGS += -DUSE_MPI
 FLAGS += -DPRINT_ONE_ROUND_TIME
 #FLAGS += -DDEBUG_CENTER
 #LDFLAGS = -lm -lpthread  -allshare
-LDFLAGS = -lm 
+LDFLAGS = -lm
 
 all: kmeansTest preprocess_data read_tiff
 
@@ -58,11 +58,11 @@ generate_data:
 mpi_run:
 	bsub -b -I -q q_sw_yfb -n 16 -np 1 -cgsp 64 -sw3runarg "-a 1" -host_stack 1024 -cross_size 28000  ./kmeansTest  ../data/cluster.dat 2256119 100000 4 1 
 run:
-	bsub -b -I -q q_sw_share -N 1 -np 1 -cgsp 64 -sw3run ./sw3run-all -sw3runarg "-a 1" -host_stack 2048 -cross_size 26000  ./kmeansTest  ../data/3D_spatial_network.dat 434874 100000 3 0 
+	bsub -b -I -q q_sw_expr -N 1 -np 1 -cgsp 64 -host_stack 2048 -cross_size 26000  ./kmeansTest  ./data/3D_spatial_network.dat 434874 100000 3 0 
 	#bsub -b -I -q q_sw_share -N 1 -np 1 -cgsp 64 -sw3run ./sw3run-all -sw3runarg "-a 1" -host_stack 2048 -cross_size 26000  ./kmeansTest  ../data/Reaction_Network.dat 65554 8192 28 0 
 	#bsub -b -I -q q_sw_share -N 1 -np 1 -cgsp 64 -sw3run ./sw3run-all -sw3runarg "-a 1" -host_stack 1024 -cross_size 28000  ./kmeansTest  ../data/census1990.dat 2458285 4 68 0 
 #	bsub -b -I -q q_sw_yfb -N 1024 -np 1 -cgsp 64 -sw3run ./sw3run-all -sw3runarg "-a 1" -host_stack 1024 -cross_size 28000  ./kmeansTest  ../data/imagenet_kmeans_256.dat 1265723 1000 196608 0 
 #1265720
-												
+
 clean:
-	-rm -f kmeansTest *.o
+	rm -f kmeansTest *.o

@@ -14,15 +14,17 @@
 
 #define SIMDSIZE    4
 #define NUM_THREADS 4
-#define MAX_ROUND 2000 //最大的聚类次数
+#define MAX_ROUND 5000 //最大的聚类次数
 #define MAX_SUPER_NODES 256 //感觉应该是MAX_NODES
 
 #define CLUSTER_COUNT (2000)
 #define DIMS          (196608)
 
-#define USE_IMAGENET
+//#define USE_IMAGENET
 
 extern SLAVE_FUN(sw_slave_kmeans_f)();
+//extern SLAVE_FUN(test)();
+
 typedef struct _KmeansPara{
   int dims;
   int data_size;
@@ -219,17 +221,19 @@ int caffe_mpi_supernode_allreduce_i( void *sendbuf, void *recvbuf, int count, in
   return 0;
 }
 int caffe_mpi_reduce( void *sendbuf, void *recvbuf,long pack_size,long count,long num,int root, MPI_Comm comm){
-    int comm_size,rank;
+    MPI_Reduce((void *)sendbuf, (void *)recvbuf, count, MPI_FLOAT, MPI_SUM, root, comm);
+    MPI_Reduce((void *)(sendbuf + count*sizeof(float)), (void *)(recvbuf + count*sizeof(float)), num, MPI_INT, MPI_SUM, root, comm);
+    /*int comm_size,rank;
     MPI_Status status;
     MPI_Request send_req,recv_req;
     MPI_Comm_size(comm, &comm_size);
     MPI_Comm_rank(comm, &rank);
     int mask = 0x1,source=0,tag = 11;
     int relrank = (rank - root + comm_size) % comm_size;
-
     sw_memcpy_f((float*)sendbuf,(float*)recvbuf,count);
     sw_memcpy_i((int*)(sendbuf + count*sizeof(float)),(int*)(recvbuf + count*sizeof(float)),num);
     long buff_size = pack_size >> 2;
+    //printf("rank=%d root=%d comm_size=%d buff_size=%d\n", rank, root, comm_size, buff_size);
     while(mask < comm_size){
       // Receive
       if ((mask & relrank) == 0) {
@@ -238,8 +242,16 @@ int caffe_mpi_reduce( void *sendbuf, void *recvbuf,long pack_size,long count,lon
           source = (source + root) % comm_size;
 	        //MPI_Irecv(sendbuf,pack_size,MPI_CHAR,source,tag,comm,&recv_req);
 	        MPI_Irecv(sendbuf,buff_size,MPI_INT,source,tag,comm,&recv_req);
+          if(rank == 0)
+          {
+            printf("rank=%d test MPI_Wait start\n", rank);
+          }
           MPI_Wait(&recv_req,&status);
-          
+          if(rank == 0)
+          {
+            printf("rank=%d test MPI_Wait end\n", rank);
+          }
+
           sw_add_f((float*)sendbuf,(float*)recvbuf,(float*)recvbuf,count);
           sw_add_i((int*)(sendbuf+count*sizeof(float)),(int*)(recvbuf+count*sizeof(float)),(int*)(recvbuf+count*sizeof(float)));
         }
@@ -252,7 +264,22 @@ int caffe_mpi_reduce( void *sendbuf, void *recvbuf,long pack_size,long count,lon
          break;
       }
       mask = mask << 1;
+    }*/
+
+    /*if(rank == 0)
+    {
+    int i;
+    float * tmp = recvbuf;
+    for(i = 0; i < count; ++i)
+    {
+      printf("%f ", tmp[i]);
     }
+    printf("\n");
+    int * tmp1 = recvbuf + count * sizeof(float);
+    for(i = 0; i < num; ++i)
+      printf("%d ", tmp1[i]);
+    printf("\n");
+    }*/
     return 0;
 }
 int caffe_mpi_supernode_allreduce( void *sendbuf, void *recvbuf,long pack_size,long count,long num, int root_count,int* ranks, MPI_Comm comm){
@@ -314,13 +341,14 @@ void init_net_topology(){
    //Get process node id
    MPI_Get_processor_name(node_info, &node_id);
    sscanf(node_info,"vn%d",&node_id);
+   printf("rank=%d node_info=%s\n", rank,  node_info);
    NodeInfo node;
    NodeInfo* nodes = (NodeInfo*)malloc(sizeof(NodeInfo)*numprocs);
    node.rank = rank;
    node.mid_id = node_id >> 8;
    //gather per process node info
    MPI_Allgather(&node,1,newType,nodes,1,newType,MPI_COMM_WORLD);
-   //Judge the root rank and nodes num of Mid start 
+   //Judge the root rank and nodes num of Mid start
    int root = nodes[0].rank;
    int mid_id = nodes[0].mid_id;
    for(i = 1;i < numprocs- 1;i++)
@@ -351,6 +379,7 @@ void init_net_topology(){
       }
    }
    free(nodes);
+   printf("rank=%d root_index=%d\n", rank, root_index);
    if(root_index>1)
    {
      MPI_Group world_group;
@@ -582,17 +611,19 @@ void initial_cluster(unsigned char * filename,int rank,int numprocs,int dims,int
 		float *temp = (float*)malloc(len);
     float *c_data,arr[4],sum;
     for( i = 0; i < cluster_count; i++ )  
-    {  
-       index = rand() % max_size;
-       c_data = cluster_center + i*dims;
-	     if(index >= start && index < end){
-         data_index = (index - start)*dims;
-         for(j=0;j+simd_size-1<dims;j+=simd_size) {
-           simd_load(vsrc,data+data_index+j);
-           simd_store(vsrc,c_data+j);
-         }  
-		     for(;j<dims;j++)   
-           c_data[j]= data[data_index+j];   
+    {
+      index = rand() % max_size;
+      c_data = cluster_center + i*dims;
+	    if(index >= start && index < end){
+        data_index = (index - start)*dims;
+        for(j=0;j+simd_size-1<dims;j+=simd_size) {
+          simd_load(vsrc,data+data_index+j);
+          simd_store(vsrc,c_data+j);
+        }
+		    for(;j<dims;j++)
+        {
+          c_data[j] = data[data_index + j];
+        }
 	     }
 	     else
 	     {
@@ -630,25 +661,27 @@ void initial_cluster(unsigned char * filename,int rank,int numprocs,int dims,int
     printf("Init cluster center ok.rank = %d\n",rank);
 } 
 #endif
+
 void writeClusterDataToFile(int round,int dims, int cluster_count, float * cluster_center){  
-    int i,j;  
-    char filename[200];  
-    FILE* file;  
-    sprintf(filename, "../data/round%d_cluster.dat", round);
-    if( NULL == (file = fopen(filename, "w"))){  
-        printf("file open(%s) error!", filename);  
-        exit(0);  
-    }  
-    
-	 for( i = 0; i < cluster_count; i++ ){
-     for( j = 0; j < dims; j++){
-       fprintf(file, "%15.6f\t", cluster_center[i*dims+j]);
+    int i,j;
+    char filename[200];
+    FILE* file;
+    sprintf(filename, "./data/round%d_%d_cluster.dat", round, cluster_count);
+    if( NULL == (file = fopen(filename, "w"))){
+        printf("file open(%s) error!", filename);
+        exit(0);
+    }
+
+	 for(i = 0; i < cluster_count; i++){
+     for(j = 0; j < dims; j++){
+       fprintf(file, "%.6f\t", cluster_center[i*dims+j]);
      }
 		fprintf(file, "\n");
    }
 
-   fclose(file);  
-}   
+   fclose(file);
+}
+
 static void *do_slave_kmeans(void * lParam)
 {
      KmeansPara *param = (KmeansPara*)lParam;
@@ -678,22 +711,26 @@ int main(int argc, char* argv[]){
   int dims=atoi(argv[4]);
   int save_status = atoi(argv[5]);
   int rank = 0,numprocs = 1;
-  assert(CLUSTER_COUNT == cluster_count);
-  assert(DIMS == dims);
+  //assert(CLUSTER_COUNT == cluster_count);
+  //assert(DIMS == dims);
 
 #ifdef USE_MPI
 	MPI_Status status; 
   MPI_Request request; 
   MPI_Init(&argc,&argv);
-  MPI_Comm comm = MPI_COMM_WORLD;  
-  MPI_Comm_rank(comm,&rank); 
-  MPI_Comm_size(comm, &numprocs);   
+  MPI_Comm comm = MPI_COMM_WORLD;
+  MPI_Comm_rank(comm,&rank);
+  MPI_Comm_size(comm, &numprocs);
+  if(rank == 0)
+  {
+    printf("numprocs=%d \n", numprocs);
+  }
   init_net_topology();
-    
+
   long buff_size = cluster_count*sizeof(float);
   buff_size *= dims;
   buff_size += cluster_count*sizeof(int);
-  
+
   unsigned char * pack_buff0 = (unsigned char *)malloc(buff_size);
   assert(pack_buff0 != NULL);
   unsigned char * pack_buff1 = (unsigned char *)malloc(buff_size);
@@ -704,10 +741,12 @@ int main(int argc, char* argv[]){
   int end = start + local_count;
   long total_data_size = local_count*sizeof(float);
   total_data_size *= dims;
-	float *data = (float*)malloc(total_data_size);  
-  assert(data != NULL);  
+  //printf("total_data_size=%d", total_data_size);
+	float *data = (float*)malloc(total_data_size);
+  assert(data != NULL);
   int ret = readDataFromFile(rank, numprocs,start,local_count,dims,data_size,filename,data);
-	//File Format Error,Or read file error	
+
+  //File Format Error,Or read file error	
 	if(ret < 1)
 	{
 		free(data);
@@ -720,7 +759,6 @@ int main(int argc, char* argv[]){
   int is_continue = 0,round = 0,offset=0, block_size=0;
   long param_size = cluster_count ;
   param_size *= dims;
-  if(rank == 0) printf("param_size = %d\n",param_size);
   float *cluster_center = NULL,*cluster_center_new = NULL,*cluster_center_old = NULL;
   int * cluster_center_num = NULL;
 #ifdef USE_4CG
@@ -737,39 +775,61 @@ int main(int argc, char* argv[]){
 	cluster_center_num = (int*)malloc(sizeof(int) * cluster_count);
   cluster_center_new = (float*)malloc(sizeof(float) * param_size);
   cluster_center_old = (float*)malloc(sizeof(float) * param_size);
+  /*if(rank == 0)
+  {
+    int tmp;
+    for(tmp = 0; tmp < param_size; ++tmp)
+    {
+      printf("%f ", cluster_center_new[tmp]);
+
+      if(tmp % 3 == 2)
+      {
+        printf("\n");
+      }
+    }
+  }*/
 #endif
-  assert(cluster_center != NULL);  
-  assert(cluster_center_num != NULL);  
-  assert(cluster_center_new != NULL);  
-  assert(cluster_center_old != NULL);  
-    
-	//Wait Data Read complete     
+  assert(cluster_center != NULL);
+  assert(cluster_center_num != NULL);
+  assert(cluster_center_new != NULL);
+  assert(cluster_center_old != NULL);
+
+	//Wait Data Read complete
 #ifdef USE_MPI
   MPI_Barrier(comm);
 #endif
 	if(rank == 0){
 		//初始化中心点及其索引，中心点可能不在一个节点上，通过重新读文件获取
-		initial_cluster(filename,rank,numprocs,dims,data_size,cluster_count,cluster_center_new,data);
-	}		
+    /*int tmp;
+    for(tmp = 0; tmp < param_size; ++tmp)
+    {
+      printf("%f ", cluster_center_new[tmp]);
+      if(tmp % 3 == 2)
+      {
+        printf("\n");
+      }
+    }*/
+    initial_cluster(filename,rank,numprocs,dims,data_size,cluster_count,cluster_center_new,data);
+	}
 #ifdef USE_MPI
-	//广播中心点	
+	//bcast the center point
   if(rank == 0) printf("bcast center starting...\n");
   caffe_mpi_bcast_f(cluster_center_new,param_size ,0, MPI_COMM_WORLD);
   if(rank == 0) printf("bcast center done.\n");
 #endif
     //1、各个计算几点把坐标和值发送到0号进程，0号进程重新计算中心点，并广播
-    //2、其他进程接收到最新中心点，判断是否满足形成条件，如果满足退出，否则，继续第一步。	
+    //2、其他进程接收到最新中心点，判断是否满足形成条件，如果满足退出，否则，继续第一步.
 #ifdef USE_4CG
   KmeansPara param[NUM_THREADS];
   for(i=0; i<NUM_THREADS; i++)
-  { 
+  {
      block_size = local_count/NUM_THREADS + (i<(local_count%NUM_THREADS));
      offset = i*(local_count/NUM_THREADS) + (i<(local_count%NUM_THREADS) ? i : (local_count%NUM_THREADS));
 	   param[i].dims = dims;
  	   param[i].cluster_count = cluster_count;
 	   param[i].cluster_center = cluster_center_new;
 	   param[i].cluster_center_num = cluster_center_num + i*cluster_count;
-	   param[i].data_size = block_size;       
+	   param[i].data_size = block_size;
 	   param[i].data = data + offset*dims;
 	   param[i].cluster_center_out = cluster_center + i*param_size;
   }
@@ -786,7 +846,18 @@ int main(int argc, char* argv[]){
 
 #ifdef PRINT_ONE_ROUND_TIME
   //if(rank ==0)writeClusterDataToFile(6666,dims,cluster_count,cluster_center_new);
-  if(rank == 0) printf("starting process ...\n");
+  if(rank == 0){
+    printf("starting process ...\n");
+    /*int tmp;
+    for(tmp = 0; tmp < param_size; ++tmp)
+    {
+      printf("%f ", cluster_center_new[tmp]);
+      if(tmp % 3 == 2)
+      {
+        printf("\n");
+      }
+    }*/
+  }
   unsigned long run_time = 0,round_run_time = 0,mpi_one_round_time = 0;
   run_time = rpcc_usec();
 #endif
@@ -804,14 +875,29 @@ int main(int argc, char* argv[]){
     sw_memcpy_f(cluster_center_new,cluster_center_old,param_size);
     sw_add_4cg_f(cluster_center,cluster_center+param_size,cluster_center+2*param_size,
         cluster_center+3*param_size,cluster_center_new,param_size);
-    
+
     sw_add_4cg_i(cluster_center_num,cluster_center_num+cluster_count,cluster_center_num+2*cluster_count,
         cluster_center_num+3*cluster_count,cluster_center_num,cluster_count);
 #else
     sw_memset_f(cluster_center,0,param_size);
-    
 		athread_spawn(sw_slave_kmeans_f,(void*)(&param));
 		athread_join();
+
+    /*if(rank == 0)
+    {
+      int tmp1, tmp2;
+      float tmp3;
+      for(tmp1 = 0; tmp1 < param.dims; ++tmp1)
+      {
+        tmp3 = 0;
+        for(tmp2 = 0; tmp2 < param.cluster_count; ++tmp2)
+        {
+          tmp3 += param.cluster_center_out[tmp2 * param.dims + tmp1];
+        }
+        printf("%f ", tmp3);
+      }
+      printf("\n");
+    }*/
 #ifdef USE_MPI
     sw_memcpy_f(cluster_center_new,(float*)pack_buff1,param_size);
     sw_memcpy_f(cluster_center,cluster_center_new,param_size);
@@ -820,7 +906,7 @@ int main(int argc, char* argv[]){
     sw_memcpy_f(cluster_center_new,cluster_center_old,param_size);
     sw_memcpy_f(cluster_center,cluster_center_new,param_size);
 #endif
-    
+
 #endif
 #ifdef USE_MPI
 #ifdef PRINT_ONE_ROUND_TIME
@@ -854,8 +940,12 @@ int main(int argc, char* argv[]){
       sw_div_f(pack_buff1,cluster_center_new,cluster_center_old,pack_buff1+param_size*sizeof(float),cluster_count,dims);
       caffe_mpi_bcast_f(cluster_center_new, param_size,0, MPI_COMM_WORLD);
     }*/
+    //if(rank == 0) printf("rank = %d reduce begin\n", rank);
+    
     caffe_mpi_reduce(pack_buff0,pack_buff1,buff_size,param_size,cluster_count,0, MPI_COMM_WORLD);
     //cluster_center = cluster_center_tmp/numprocs
+    //if(rank == 0) printf("rank = %d reduce end\n", rank);
+    
     sw_div_f(pack_buff1,cluster_center_new,cluster_center_old,pack_buff1+param_size*sizeof(float),cluster_count,dims);
     caffe_mpi_bcast_f(cluster_center_new, param_size,0, MPI_COMM_WORLD);
     //MPI_Allreduce(pack_buff0,pack_buff1,(buff_size>>2),MPI_FLOAT,MPI_SUM,MPI_COMM_WORLD);
@@ -878,7 +968,7 @@ int main(int argc, char* argv[]){
 #ifdef PRINT_ONE_ROUND_TIME
    round_run_time = rpcc_usec() - round_run_time;
    if(rank == 0)
-   printf("round = %d\trun_time = %15.6f mpi run_time = %15.6f root_index = %d\n",round,round_run_time/1000000.0,mpi_one_round_time/1000000.0,root_index);
+   printf("round = %d  run_time = %lu us  mpi_run_time = %lu us  root_index = %d\n",round,round_run_time,mpi_one_round_time,root_index);//  /1000000.0
    //if(save_status) writeClusterDataToFile(round,dims,cluster_count,commPara.cluster_center);
 #endif
 #ifdef USE_MPI
@@ -894,7 +984,7 @@ int main(int argc, char* argv[]){
         float dTmp = total_data_size/dTime;
         format_result(total_data_size,cInf);
         format_result(dTmp,cInf1);
-        printf("KMeans speed (pkt = %s ): time= %15.6fs speed = %s/s avg run time = %15.6f\n",cInf, dTime,cInf1,dTime/(round+1));
+        printf("KMeans speed (pkt = %s): time= %.6fs speed = %s/s avg_run_time = %.6f\n",cInf, dTime,cInf1,dTime/(round+1));
 
         writeClusterDataToFile(round,dims,cluster_count,cluster_center_new);
         break;

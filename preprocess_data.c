@@ -168,4 +168,5 @@ int main(int argc, char* argv[]){
     precess_data(argv[1],argv[2],dims);
     //precess_data1(argv[1],argv[2]);
     printf("process data done!");
+    return 0;
 }

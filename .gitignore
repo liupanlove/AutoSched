@@ -3,3 +3,6 @@ data/
 
 #generated files
 *.o
+
+#vscode
+.vscode/
