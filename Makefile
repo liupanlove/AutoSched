@@ -21,6 +21,12 @@ preprocess_data.o:preprocess_data.c
 preprocess_data:preprocess_data.o
 	$(LINK) preprocess_data.o -o preprocess_data
 
+deal_data.o: deal_data.c
+	$(CC) $(FLAGS) -c -msimd deal_data.c
+deal_data_slave.o: deal_data_slave.c
+	$(SWCC) -slave $(FLAGS)  -c -msimd  deal_data_slave.c
+deal_data: deal_data.o deal_data_slave.o
+	$(LINK) deal_data.o deal_data_slave.o -allshare -o deal_data $(LDFLAGS)
 kmeansTest:master.o slave.o sw_memcpy.o sw_add.o sw_div.o sw_slave_memcpy.o sw_slave_add.o sw_slave_div.o sw_slave_memset.o sw_memset.o
 	$(LINK) master.o slave.o sw_memcpy.o sw_add.o sw_div.o sw_slave_memcpy.o sw_slave_add.o sw_slave_div.o sw_slave_memset.o sw_memset.o  -o kmeansTest $(LDFLAGS)
 	
@@ -42,11 +48,10 @@ slave.o:slave.c
 	$(SWCC) -slave $(FLAGS)  -c -msimd  slave.c
 sw_slave_memcpy.o:./util/sw_slave_memcpy.c 
 	$(SWCC) -slave $(FLAGS)  -c -msimd  ./util/sw_slave_memcpy.c
-sw_slave_add.o:./util/sw_slave_add.c 
+sw_slave_add.o:./util/sw_slave_add.c
 	$(SWCC) -slave $(FLAGS)  -c -msimd  ./util/sw_slave_add.c
-sw_slave_div.o:./util/sw_slave_div.c 
+sw_slave_div.o:./util/sw_slave_div.c
 	$(SWCC) -slave $(FLAGS)  -c -msimd  ./util/sw_slave_div.c
-	
 
 read_tiff_run:
 	bsub -b -I -q q_sw_expr -n 1 -np 4 -cgsp 64  -host_stack 2048 -share_size 4096  ./read_tiff  ../data/zy302a_mux.tif ../data/remote_sensing_image.dat 
@@ -63,6 +68,7 @@ run:
 	#bsub -b -I -q q_sw_share -N 1 -np 1 -cgsp 64 -sw3run ./sw3run-all -sw3runarg "-a 1" -host_stack 1024 -cross_size 28000  ./kmeansTest  ../data/census1990.dat 2458285 4 68 0 
 #	bsub -b -I -q q_sw_yfb -N 1024 -np 1 -cgsp 64 -sw3run ./sw3run-all -sw3runarg "-a 1" -host_stack 1024 -cross_size 28000  ./kmeansTest  ../data/imagenet_kmeans_256.dat 1265723 1000 196608 0 
 #1265720
-
+deal_data_run: #-node 10820-10829               25,27,29-31,48-50
+	bsub -b -I -q q_sw_yfb -host_stack 1024 -N 10 -cgsp 64 -node 10820-10829 -sw3run ./sw3run-all -sw3runarg "-a 1" -cross_size 28000  ./deal_data ./data/gse2109_54675_895.dat 54675 895 ./data/distance1.dat
 clean:
-	rm -f kmeansTest *.o
+	rm -f kmeansTest deal_data *.o
