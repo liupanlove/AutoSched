@@ -68,7 +68,7 @@ run:
 	#bsub -b -I -q q_sw_share -N 1 -np 1 -cgsp 64 -sw3run ./sw3run-all -sw3runarg "-a 1" -host_stack 1024 -cross_size 28000  ./kmeansTest  ../data/census1990.dat 2458285 4 68 0 
 #	bsub -b -I -q q_sw_yfb -N 1024 -np 1 -cgsp 64 -sw3run ./sw3run-all -sw3runarg "-a 1" -host_stack 1024 -cross_size 28000  ./kmeansTest  ../data/imagenet_kmeans_256.dat 1265723 1000 196608 0 
 #1265720
-deal_data_run: #-node 10820-10829               25,27,29-31,48-50
-	bsub -b -I -q q_sw_yfb -host_stack 1024 -N 10 -cgsp 64 -node 10820-10829 -sw3run ./sw3run-all -sw3runarg "-a 1" -cross_size 28000  ./deal_data ./data/gse2109_54675_895.dat 54675 895 ./data/distance1.dat
+deal_data_run:
+	bsub -b -I -q q_sw_expr -host_stack 1024 -N 2 -cgsp 64 -sw3run ./sw3run-all -sw3runarg "-a 1" -cross_size 28000  ./deal_data ./data/4251.dat 4251 54675 ./data/distance1.dat
 clean:
 	rm -f kmeansTest deal_data *.o

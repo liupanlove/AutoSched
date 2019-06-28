@@ -66,6 +66,7 @@ typedef struct _EvaluationPara{
   float * cluster_distance_count;
   float * non_cluster_distance_count;
   float * radius;
+  float * distance;
 } EvaluationPara;
 //Custom Allreduce
 
@@ -690,63 +691,42 @@ void initial_cluster(unsigned char * filename,int rank,int numprocs,int dims,int
 		    for(;j<dims;j++)
           c_data[j]= temp[j];
 	    }
-       /*for(j = 0;j < i;j++) {
-         sum = 0;
-         vsum = 0;
-         for(k = 0; k + simd_size -1 < dims;k += simd_size){
-            simd_load(vsrc,c_data);
-            simd_load(vdst,cluster_center+k);
-            vsrc = vsrc - vdst;
-            vsum += vsrc *vsrc;
-         }
-         simd_store(vsum,arr);
-         for(s = 0; s < 4;s++) sum += arr[s];
-         for(;k < dims;k++) sum += (c_data[k] - cluster_center[k]) * (c_data[k] - cluster_center[k]);
-         if((sqrt(sum) / dims) < 5) {
-           i--;
-           break;
-         }
-       }
-       */
     }
 
-    /*for(i = 0; i < cluster_count; ++i)
-    {
-      if(is_used[i] == 0)  printf("%d something wrong\n", i);
-    }*/
     free(is_used);
 		free(temp);
     close(rdfd);
-    //printf("Init cluster center ok.rank = %d\n",rank);
 }
 #endif
 
-void writeClusterDataToFile(int round,int dims, int cluster_count, float * cluster_center, int data_size, int * data_group, float * cluster_distance_count, float * non_cluster_distance_count, unsigned long all_time, float * all_radius){
+void writeClusterDataToFile(int round,int dims, int cluster_count, float * cluster_center, int data_size, int * data_group, float * cluster_distance_count, float * non_cluster_distance_count, unsigned long all_time, unsigned long round_time, unsigned long cluster_time, float * all_radius){
   int i,j;
   char filename[200];
   FILE* file_write, *file_read;
-  float min_radius = FLT_MAX;
+  float min_radius = 0, pre_radius = FLT_MAX;
   sprintf(filename, "./data/round_%d_cluster.dat", cluster_count);  //sprintf(filename, "./data/round%d_%d_cluster.dat", round, cluster_count);
   /*if(NULL != (file_read = fopen(filename, "r")))
   {
-    fscanf(file_read, "%f", &min_radius);
-    printf("min_radius=%f\n", min_radius);
+    fscanf(file_read, "%f", &pre_radius);
+    printf("min_radius=%f\n", pre_radius);
   }
   fclose(file_read);*/
 
+  char filename1[200];
+  FILE* file_write_time;
+  sprintf(filename1, "./data/time_%d_cluster.dat", cluster_count);
+  if( NULL == (file_write_time = fopen(filename1, "w")) )
+  {
+    printf("file open(%s) error!", filename1);
+    exit(0);
+  }
 
-  if( NULL == (file_write = fopen(filename, "w"))){
+  if( NULL == (file_write = fopen(filename, "a+"))){
     printf("file open(%s) error!", filename);
     exit(0);
   }
 
-  if(data_group != NULL)
-  {
-    for(i = 0; i < data_size; ++i)
-    {
-      fprintf(file_write, "%d\n", data_group[i]);
-    }
-  }
+
   if(cluster_distance_count != NULL){
     for(i = 0; i < cluster_count; i++)
     {
@@ -797,22 +777,77 @@ void writeClusterDataToFile(int round,int dims, int cluster_count, float * clust
     printf("evaluation_value=%f\n", evaluation_value);
     fprintf(file_write, "%f\n", evaluation_value);
   }
-  //printf("all_time=%lu us\n", all_time);
-  //fprintf(file, "%lu\n", all_time);
+  printf("all_time=%lu us\n", all_time);
+  printf("round_time=%lu us\n", round_time);
+  printf("cluster_time=%lu us\n", cluster_time);
+  fprintf(file_write_time, "all_time=%lu\n", all_time);
+  fprintf(file_write_time, "round_time=%lu\n", round_time);
+  fprintf(file_write_time, "cluster_time=%lu\n", cluster_time);
   //float min_radius = FLT_MAX;
-  /*if(all_radius != NULL)
+  int flag = 0;
+  if(all_radius != NULL)
   {
-    for(i = 0 ; i < data_size; ++i)
+    int cluster;
+    float * cluster_radius = (float *) malloc(cluster_count * sizeof(float));
+    assert(cluster_radius != NULL);
+    for(i = 0; i < cluster_count; ++i)
     {
-      if(all_radius[i] < min_radius)
+      cluster_radius[i] = FLT_MAX;
+    }
+    for(i = 0; i < data_size; ++i)
+    {
+      cluster = data_group[i];
+      //printf("i = %d  cluster = %d\n", i, cluster);
+      if(all_radius[i] < cluster_radius[cluster])
       {
-        min_radius = all_radius[i];
+        cluster_radius[cluster] = all_radius[i];
       }
     }
+    for(i = 0; i < cluster_count; ++i)
+    {
+      if(min_radius < cluster_radius[i])
+      {
+        //flag = 1;
+        min_radius = cluster_radius[i];
+      }
+    }
+    printf("min_radius = %f\n", min_radius);
+    /*if(min_radius > pre_radius)
+    {
+      //min_radius = pre_radius;
+    }
+    else
+    {
+      flag = 1;
+    }*/
+    free(cluster_radius);
   }
-  printf("min_radius=%f\n", min_radius);
-  fprintf(file_write, "%f\n", min_radius);*/
+  //printf("pre_radius=%f\n", pre_radius);
+  //printf("min_radius=%f\n", min_radius);
+  fprintf(file_write, "%f\n", min_radius);
   fclose(file_write);
+  printf("end\n");
+  if(flag == 1)
+  {
+    FILE * file_write_center;
+    char filename_center[200];
+    sprintf(filename_center, "./data/center_%d_cluster.dat", cluster_count);
+    if( NULL == (file_write_center = fopen(filename_center, "w")) ){
+      printf("file open(%s) error!", filename_center);
+      exit(0);
+    }
+
+    for(i = 0; i < cluster_count; ++i)
+    {
+      for(j = 0; j < dims; ++j)
+      {
+        fprintf(file_write_center, "%f ", cluster_center[i * dims + j]);
+      }
+      fprintf(file_write_center, "\n");
+    }
+    fclose(file_write_center);
+  }
+  fclose(file_write_time);
 }
 
 static void *do_slave_kmeans(void * lParam)
@@ -870,6 +905,8 @@ void write_data_group(int data_size, int * data_group)
 int main(int argc, char* argv[]){
   unsigned long all_time;
   all_time = rpcc_usec();
+  unsigned long cluster_time;
+  cluster_time = all_time;
   if( argc != 9){
     printf("This application need other parameter to run:"
                 "\n\t\tthe first is the file name that contain data"  
@@ -943,11 +980,9 @@ int main(int argc, char* argv[]){
   assert(data != NULL);
   /*if(data != NULL)
   {
-    printf("haipa\n");
     int tmp;
     for(tmp = 0; tmp < dims; ++tmp)
       printf("%f ", data[tmp]);
-    printf("haipa\n");
     //write_data1(data_size, dims, data);
   }*/
   //File Format Error,Or read file error
@@ -1225,7 +1260,7 @@ int main(int argc, char* argv[]){
 #endif   
      if(is_continue < 1)
      {
-        all_time = rpcc_usec() - all_time;
+        cluster_time = rpcc_usec() - cluster_time;
         run_time = rpcc_usec() - run_time;
         float total_data_size = data_size*dims*sizeof(float);
         float dTime = run_time/1000000.0;
@@ -1274,7 +1309,7 @@ int main(int argc, char* argv[]){
   float * non_cluster_distance_count_dst = (float *)malloc(cluster_count * sizeof(float));
   assert(non_cluster_distance_count_dst != NULL);
   if(is_continue < 1 && caculate_status > 0){
-    if(rank == 0)
+    /*if(rank == 0)
     {
       int *cluster_center_num1 = (int*)(pack_buff1 + param_size*sizeof(float));
       int m, n;
@@ -1286,17 +1321,10 @@ int main(int argc, char* argv[]){
           //}
           //printf("\n");
        }
-    }
+    }*/
     athread_spawn(get_data_group,(void*)(&evaluation_para)); // get the data_group
     athread_join();
 
-    //Gather all_data_group
-    /*int m;
-    for(m = 0; m < dims; ++m)
-    {
-    printf("%f ", data[m]);
-
-    }*/
     printf("get_data_group finished\n");
     //int * all_data_group = (int*)malloc(data_size * sizeof(int));
     //assert(all_data_group != NULL);
@@ -1318,32 +1346,13 @@ int main(int argc, char* argv[]){
         MPI_Recv(all_data_group + start, other_local_count, MPI_INT, i, 0, comm, MPI_STATUS_IGNORE);
       }
 
-      /*for(i= 0; i < data_size; ++i)
-      {
-        printf("%d  %d\n", i, all_data_group[i]);
-      }
-
-      for(i = 0; i < cluster_count; i++){
-        for(j = 0; j < dims; j++){
-          printf("%.6f\t", cluster_center[i*dims+j]);
-        }
-        printf("\n");
-      }*/
-
     }
     MPI_Bcast(all_data_group, data_size, MPI_INT, 0, comm);
     evaluation_para.all_data_group = all_data_group;
 
-    /*if(rank == 0)
-    {
-      for(i = 0; i < data_size; ++i)
-      {
-        printf("%d %d\n", i, all_data_group[i]);
-      }
-    }*/
     if(caculate_status == 1)
     {
-      writeClusterDataToFile(round,dims,cluster_count,cluster_center_new, data_size, NULL, NULL, NULL, all_time, NULL);
+      writeClusterDataToFile(round,dims,cluster_count,cluster_center_new, data_size, NULL, NULL, NULL, all_time, round_run_time, cluster_time, NULL);
       if(sense_data > 0)
       {
         write_data_group(data_size, all_data_group);
@@ -1351,9 +1360,20 @@ int main(int argc, char* argv[]){
     }
     else
     {
+      int fd_distance = open(distance_filename, O_RDONLY, S_IRWXU|S_IRWXG|S_IRWXO);
+      unsigned long distance_size = (unsigned long) data_size * (unsigned long) data_size;
+      distance_size *= (unsigned long) sizeof(float);
+      printf("distance_size=%lu\n", distance_size);
+      float * distance = (float *)malloc(distance_size);
+
+      load_data(fd_distance, distance, distance_size, 0);
+      close(fd_distance);
       printf("test\n");
+      evaluation_para.distance = distance;
       athread_spawn(caculate_radius, (void*)(&evaluation_para));
       athread_join();
+
+      free(distance);
       if(rank != 0)
       {
         MPI_Send(radius, local_count, MPI_FLOAT, 0, 0, comm);
@@ -1374,20 +1394,24 @@ int main(int argc, char* argv[]){
       }
       //MPI_Reduce(cluster_distance_count, cluster_distance_count_dst, cluster_count, MPI_FLOAT, MPI_SUM, 0, comm);
       //MPI_Reduce(non_cluster_distance_count, non_cluster_distance_count_dst, cluster_count, MPI_FLOAT, MPI_SUM, 0, comm);
+
       if(rank == 0)
       {
-        printf("local_count=%d\n", local_count);
-        for(i = 0; i < local_count; ++i)
+        //printf("local_count=%d\n", local_count);
+        /*for(i = 0; i < local_count; ++i)
         {
           printf("%d %f\n", i, all_radius[i]);
-        }
-        writeClusterDataToFile(round,dims,cluster_count,cluster_center_new, data_size, all_data_group, NULL, NULL, all_time, all_radius);
+        }*/
+        all_time = rpcc_usec() - all_time;
+        printf("all_time=%lu\n", all_time);
+        writeClusterDataToFile(round,dims,cluster_count,cluster_center_new, data_size, all_data_group, NULL, NULL, all_time, round_run_time, cluster_time, all_radius);
       }
     }
   }
   else if(is_continue < 1 && caculate_status == 0)
   {
-    writeClusterDataToFile(round, dims, cluster_count, cluster_center_new, data_size, NULL, NULL, NULL, all_time, NULL);
+    if(rank == 0)
+      writeClusterDataToFile(round, dims, cluster_count, cluster_center_new, data_size, NULL, NULL, NULL, all_time, round_run_time, cluster_time, NULL);
   }
 
 	athread_halt();

@@ -65,6 +65,7 @@ typedef struct _EvaluationPara{
   float * cluster_distance_count;
   float * non_cluster_distance_count;
   float * radius;
+  float * distance;
 } EvaluationPara;
 
 inline void add_f(float * src,float *dst,int count)
@@ -386,6 +387,306 @@ void kmeans_normal(KmeansPara *para) {
   ldm_free(local_center, center_size*sizeof(float));
   ldm_free(local_center_temp, local_center_size*sizeof(float));
   ldm_free(local_data, buff_size);
+}
+
+void kmeans_dims_large1(KmeansPara * para)
+{
+    const int max_len = 59 * 1024;
+    int i, j, k, c, off=0;
+
+    int id = athread_get_id(-1);
+    int count = para->data_size;
+    int cluster_count=para->cluster_count;
+    int dims = para->dims;
+
+    volatile int replyget_data=0, replyput_center=0, replyget_center=0, replyput_center_num=0;
+    dma_desc dma_get_data, dma_put_center, dma_get_center, dma_put_center_num;
+
+    int local_dims = dims / SPNUM + (id < (dims % SPNUM));
+    int start_dims = id * (dims / SPNUM) + (id < (dims % SPNUM) ? id : (dims%SPNUM));
+    int left_space = max_len - ((2 * cluster_count * local_dims * sizeof(float)) + cluster_count * sizeof(int));
+    assert(left_space > 0);
+
+    int max_data_num = left_space / (local_dims * sizeof(float));
+    assert(max_data_num > 0);
+
+    int center_size = cluster_count * local_dims;
+    int local_center_size = center_size;
+    int cluster_count_size = cluster_count;
+    int local_center_count = cluster_count;
+    int* cluster_center_num = (int*)para->cluster_center_num;
+
+    float* data_ptr = (float*)para->data;
+    float* cluster_center = (float*)para->cluster_center;
+    float* cluster_center_out = (float*)para->cluster_center_out;
+
+    float *local_data   = (float*)ldm_malloc(max_data_num*local_dims*sizeof(float));
+    float *local_center = (float*)ldm_malloc(center_size*sizeof(float));
+    float *local_center_temp = (float*)ldm_malloc(local_center_size*sizeof(float));
+
+    for(i=0;i<local_center_size;i++)
+        local_center_temp[i] = 0.0;
+
+    int *local_center_num = (int*)ldm_malloc(cluster_count_size*sizeof(int));
+    for(i=0;i<cluster_count_size;i++)
+        local_center_num[i] = 0;
+
+    // DMA settings
+    dma_set_op(&dma_get_center, DMA_GET);
+    dma_set_mode(&dma_get_center, PE_MODE);
+    dma_set_reply(&dma_get_center, &replyget_center);
+    dma_set_size(&dma_get_center,cluster_count*local_dims*sizeof(float));
+    dma_set_bsize(&dma_get_center,local_dims*sizeof(float));
+    dma_set_stepsize(&dma_get_center,(dims - local_dims)*sizeof(float));
+
+    dma_set_op(&dma_get_data, DMA_GET);
+    dma_set_mode(&dma_get_data, PE_MODE);
+    dma_set_reply(&dma_get_data, &replyget_data);
+    dma_set_size(&dma_get_data,max_data_num*local_dims*sizeof(float));
+    dma_set_bsize(&dma_get_data,local_dims*sizeof(float));
+    dma_set_stepsize(&dma_get_data,(dims - local_dims)*sizeof(float));
+
+    dma_set_op(&dma_put_center, DMA_PUT);
+    dma_set_mode(&dma_put_center, PE_MODE);
+    dma_set_reply(&dma_put_center, &replyput_center);
+    dma_set_size(&dma_put_center,cluster_count*local_dims*sizeof(float));
+    dma_set_bsize(&dma_put_center,local_dims*sizeof(float));
+    dma_set_stepsize(&dma_put_center,(dims - local_dims)*sizeof(float));
+
+    dma_set_op(&dma_put_center_num, DMA_PUT);
+    dma_set_mode(&dma_put_center_num, PE_MODE);
+    dma_set_reply(&dma_put_center_num, &replyput_center_num);
+    dma_set_size(&dma_put_center_num,cluster_count*sizeof(int));
+
+    float temp = 0,sum = 0,oldsum=0,arr[4];
+    floatv4 vold,vnew,vsrc,vdst,vsum;
+    int min_index = 0,index = 0;
+    int data_index = 0,cluster_index =0;
+    long offset = 0;
+    //Center DMA
+    dma(dma_get_center, (long)(cluster_center + start_dims), (long)(local_center));
+    dma_wait(&replyget_center, 1); replyget_center = 0;
+
+
+    for(off = 0; off+max_data_num-1 < count; off+=max_data_num)
+    {
+        // DMA get a block
+        offset = off;
+        offset *= dims;
+        offset += start_dims;
+
+        dma(dma_get_data, (long)(data_ptr + offset), (long)(local_data));
+        dma_wait(&replyget_data, 1); replyget_data = 0;
+
+        for(i=0; i< max_data_num; i++) {
+            oldsum = 0;
+            vsum = 0;
+            data_index = i*local_dims;
+            for(k=0;k+SIMDSIZE-1 < local_dims; k += SIMDSIZE){
+                simd_loadu(vsrc,local_data+data_index+k);
+                simd_loadu(vdst,local_center+k);
+                vdst = vsrc - vdst;
+                vsum += vdst * vdst;
+            }
+            simd_store(vsum,arr);
+            for(j=0;j<4;j++) oldsum += arr[j];
+            for (; k < local_dims; k++){
+                temp = local_data[data_index+k] - local_center[k];
+                oldsum += temp*temp;
+            }
+            vold = oldsum;
+            LONG_PUTR(vold,8);
+            //simd_loader(vold,&oldsum);
+            for(j=0;j<RECV_NUM;j++)
+            {
+                LONG_GETR(vnew);
+                vold = vold + vnew;
+            }
+            LONG_PUTC(vold,8);
+            for(j=0;j<RECV_NUM;j++)
+            {
+              LONG_GETC(vnew);
+              vold = vold + vnew;
+            }
+            simd_store(vold,arr);
+            oldsum = arr[0];
+            min_index = 0;
+            for(c = 1; c < cluster_count;c++)
+            {
+                sum = 0;
+                vsum = 0;
+                cluster_index = c*local_dims;
+                for(k=0;k+SIMDSIZE-1 < local_dims; k += SIMDSIZE){
+                    simd_loadu(vsrc,local_data+data_index+k);
+                    simd_loadu(vdst,local_center+cluster_index+k);
+                    vdst = vsrc - vdst;
+                    vsum += vdst * vdst;
+                }
+                simd_store(vsum,arr);
+                for(j=0;j<4;j++) sum += arr[j];
+
+                for (; k < local_dims; k++){
+                    temp = local_data[data_index+k] - local_center[cluster_index+k];
+                    sum += temp*temp;
+                }
+                vold = sum;
+                LONG_PUTR(vold,8);
+
+                for(j=0;j<RECV_NUM;j++)
+                {
+                    LONG_GETR(vnew);
+                    vold = vold + vnew;
+                }
+
+                LONG_PUTC(vold,8);
+                for(j=0;j<RECV_NUM;j++)
+                {
+                    LONG_GETC(vnew);
+                    vold = vold + vnew;
+                }
+
+                simd_store(vold,arr);
+
+                sum = arr[0];
+                if(sum < oldsum)
+                {
+                    min_index = c;
+                    oldsum = sum;
+                }
+
+            }
+            local_center_num[min_index]++;
+            index = min_index*local_dims;
+            for(k=0;k+SIMDSIZE-1 < local_dims;k+=SIMDSIZE)
+            {
+                simd_loadu(vsrc,&local_center_temp[index+k]);
+                simd_loadu(vdst,&local_data[data_index+k]);
+                vsrc = vsrc + vdst;
+                simd_storeu(vsrc,&local_center_temp[index+k]);
+            }
+
+            for (; k < local_dims; k++){
+                local_center_temp[index + k] += local_data[data_index+k];
+            }
+        }
+    }
+
+    if(off < count) {
+        int left_count = count - off;
+        offset = off;
+        offset *= dims;
+        offset += start_dims;
+
+        dma_set_size(&dma_get_data,left_count * local_dims * sizeof(float));
+        dma(dma_get_data, (long)(data_ptr + offset), (long)(local_data));
+        dma_wait(&replyget_data, 1); replyget_data = 0;
+
+        for(i=0; i< left_count; i++) {
+            oldsum = 0;
+            vsum = 0;
+            data_index = i*local_dims;
+
+            for(k=0;k+SIMDSIZE-1 < local_dims; k += SIMDSIZE){
+                simd_loadu(vsrc,local_data+data_index+k);
+                simd_loadu(vdst,local_center+k);
+                vdst = vsrc - vdst;
+                vsum += vdst * vdst;
+            }
+
+            simd_store(vsum,arr);
+            for(j=0;j<4;j++) oldsum += arr[j];
+            for (; k < local_dims; k++){
+                temp = local_data[data_index+k] - local_center[k];
+                oldsum += temp*temp;
+            }
+            vold = oldsum;
+            LONG_PUTR(vold,8);
+
+            for(j=0;j<RECV_NUM;j++)
+            {
+                LONG_GETR(vnew);
+                vold = vold + vnew;
+            }
+
+            LONG_PUTC(vold,8);
+            for(j=0;j<RECV_NUM;j++)
+            {
+                LONG_GETC(vnew);
+                vold = vold + vnew;
+            }
+            simd_store(vold,arr);
+            oldsum = arr[0];
+            min_index = 0;
+
+            for(c = 1; c < cluster_count;c++)
+            {
+                sum = 0;
+                vsum = 0;
+                cluster_index = c*local_dims;
+                for(k=0;k+SIMDSIZE-1 < local_dims; k += SIMDSIZE){
+
+                    simd_loadu(vsrc,local_data+data_index+k);
+                    simd_loadu(vdst,local_center+cluster_index+k);
+                    vdst = vsrc - vdst;
+                    vsum += vdst * vdst;
+                }
+
+                simd_store(vsum,arr);
+                for(j=0;j<4;j++) sum += arr[j];
+                for (; k < local_dims; k++){
+                    temp = local_data[data_index+k] - local_center[cluster_index+k];
+                    sum += temp*temp;
+                }
+                vold = sum;
+                LONG_PUTR(vold,8);
+                for(j=0;j<RECV_NUM;j++)
+                {
+                    LONG_GETR(vnew);
+                    vold = vold + vnew;
+                }
+
+                LONG_PUTC(vold,8);
+                for(j=0;j<RECV_NUM;j++)
+                {
+                    LONG_GETC(vnew);
+                    vold = vold + vnew;
+                }
+                simd_store(vold,arr);
+                sum = arr[0];
+                if(sum < oldsum) 
+                {
+                    min_index = c;
+                    oldsum = sum;
+                }
+            }
+            local_center_num[min_index]++;
+            index = min_index*local_dims;
+
+            for(k=0;k+SIMDSIZE-1 < local_dims;k+=SIMDSIZE)
+            {
+                simd_loadu(vsrc,&local_center_temp[index+k]);
+                simd_loadu(vdst,&local_data[data_index+k]);
+                vsrc = vsrc + vdst;
+                simd_storeu(vsrc,&local_center_temp[index+k]);
+            }
+            for (; k < local_dims; k++){
+                local_center_temp[index + k] += local_data[data_index+k];
+            }
+        }
+    }
+    mb();
+    dma(dma_put_center, (long)(cluster_center_out + start_dims), (long)(local_center_temp));
+    dma_wait(&replyput_center, 1); replyput_center = 0;
+    mb();
+    if(id == 0){
+        dma(dma_put_center_num, (long)(cluster_center_num), (long)(local_center_num));
+        dma_wait(&replyput_center_num, 1); replyput_center_num = 0;
+    }
+
+    ldm_free(local_center_num, cluster_count_size*sizeof(int));
+    ldm_free(local_center, center_size*sizeof(float));
+    ldm_free(local_center_temp, local_center_size*sizeof(float));
+    ldm_free(local_data,max_data_num*local_dims*sizeof(float));
 }
 
 void kmeans_dims_large(KmeansPara *para) {
@@ -1682,14 +1983,14 @@ void kmeans_both_large_but_dims_smaller(KmeansPara *para) {
     {
       printf("id=%d", id);
     }*/
-  if(para->rank == 0 && id == 0)
+  /*if(para->rank == 0 && id == 0)
   {
     int m;
     for(m = 0; m < local_cluster_count; ++m)
     {
       printf("slave %d %d\n", m, local_center_num[m]);
     }
-  }
+  }*/
   //}
   ldm_free(local_data_index, max_data_num*sizeof(int));  
   ldm_free(local_oldsum, max_data_num*sizeof(float));  
@@ -2111,7 +2412,7 @@ void sw_slave_kmeans_f(KmeansPara *para) {
     if(left_space < 1 && (cluster_count / SPNUM ) >0)
         is_splited_cluster_count = 1;
 
-    if(id == 0) printf("is_splited_cluster_count=%d  is_splited_dims=%d  total_size=%ld\n", is_splited_cluster_count, is_splited_dims, total_size);
+    //if(id == 0) printf("is_splited_cluster_count=%d  is_splited_dims=%d  total_size=%ld\n", is_splited_cluster_count, is_splited_dims, total_size);
   }
   else
   {
@@ -2130,7 +2431,7 @@ void sw_slave_kmeans_f(KmeansPara *para) {
 
     if(left_space < 1 && (dims / SPNUM ) >0)
         is_splited_dims = 1;
-    if(id == 0) printf("is_splited_cluster_count=%d  is_splited_dims=%d\n", is_splited_cluster_count, is_splited_dims);
+    //if(id == 0) printf("is_splited_cluster_count=%d  is_splited_dims=%d\n", is_splited_cluster_count, is_splited_dims);
   }
   if(is_splited_cluster_count <1 && is_splited_dims < 1)
   {
@@ -2174,7 +2475,7 @@ void sw_slave_kmeans_f(KmeansPara *para) {
   }
   else{
      if(dims < max_dims){
-       //if(id == 0)  printf("kmeans_both_large_but_dims_smaller %d\n", id);
+      // if(id == 0)  printf("kmeans_both_large_but_dims_smaller %d\n", id);
        kmeans_both_large_but_dims_smaller(para);
      }
      else{
@@ -2272,6 +2573,7 @@ void get_data_group(EvaluationPara * para)
 
     }
     data_group[i] = min_index;
+    if(id == 0) printf("get_data_group %d\n", i);
   }
 }
 
@@ -2332,9 +2634,11 @@ void caculate_radius(EvaluationPara * para)
   int data_start = para->data_start;
   int * data_group = para->all_data_group;
   float * local_all_data = &(((float*)para->all_data)[start*dims]);
+  float * all_distance = para->distance;
 
   int i, j, cluster_num, tmp;
-  float distance;
+  float distance, distance1;
+  int distance_index;
 
   int align_data_size = align(data_size, SIMDSIZE);
   float * radius = (float *)malloc(align_data_size * sizeof(float));
@@ -2351,14 +2655,25 @@ void caculate_radius(EvaluationPara * para)
       tmp = data_group[start + j];
       if(tmp == cluster_num)
       {
-        distance = get_euclidean_distance(data + i * dims, local_all_data + j * dims, dims);
+        //distance = get_euclidean_distance(data + i * dims, local_all_data + j * dims, dims);
+        distance_index = (data_start + i) * all_data_size + start + j;
+        distance = all_distance[distance_index];
+
+        //if(abs(distance - distance1) > 1e-4) printf("something wrong distance not equal\n");
+        //if(i == 0 && id == 0)
+        //{
+        //  printf("id=%d j=%d  distance=%f\n", id, j, distance);
+        //}
         if(distance > radius[i])
         {
           radius[i] = distance;
         }
       }
     }
+    //if(id == 0)  printf("slave caculate_radius %d\n", i);
   }
+  //if(id == 0)
+  //  printf("id=%d  i = 0 min_distance=%f\n", id, radius[0]);
 
   int k;
   floatv4 va, vb;
@@ -2402,6 +2717,8 @@ void caculate_radius(EvaluationPara * para)
     simd_store(va, radius + i);
   }
 
+  //if(id == 0)
+  //  printf("global min_distance=%f\n", radius[0]);
   for(i = 0; i < data_size; ++i)
   {
     para->radius[i] = radius[i];
